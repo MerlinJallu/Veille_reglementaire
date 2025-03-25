@@ -1,10 +1,18 @@
 [
     {
-        "nom": "Nitrites réglementation",
-        "rss": "https://www.google.fr/alerts/feeds/05781524814933497677/9517889420204170785"
+        "nom": "EUR-Lex",
+        "rss": "https://eur-lex.europa.eu/rss.do?locale=fr"
     },
     {
-        "nom": "Contaminants 1881/2006",
-        "rss": "https://www.google.fr/alerts/feeds/05781524814933497677/2512022764761655791"
+        "nom": "RASFF",
+        "rss": "https://webgate.ec.europa.eu/rasff-window/portal/rssFeed"
+    },
+    {
+        "nom": "FICT",
+        "rss": "https://news.google.com/rss/search?q=FICT%20charcuterie&hl=fr&gl=FR&ceid=FR:fr"
+    },
+    {
+        "nom": "CIDEF",
+        "rss": "https://news.google.com/rss/search?q=CIDEF%20dinde&hl=fr&gl=FR&ceid=FR:fr"
     }
 ]
