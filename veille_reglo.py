@@ -1,128 +1,334 @@
+import os
+import time
+import json
+import requests
 import feedparser
 import openai
-import os
-import json
-import time
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from requests.exceptions import SSLError
 
+# SerpApi
+from serpapi import GoogleSearch
+
+# =============================================
+# 1) CONFIGURATION / CHARGEMENT DE LA CLÉ OPENAI
+# =============================================
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-CHECK_INTERVAL = 1800  # Toutes les 30 min
+# Clé SerpApi (stockée dans .env : SERP_API_KEY=...)
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
-# Charger la liste des flux RSS depuis un fichier
+# Intervalle entre deux itérations (en secondes)
+CHECK_INTERVAL = 1800  # 30 minutes par défaut
+
+
+# =============================================
+# 2) FONCTIONS POUR GÉRER LES FICHIERS JSON
+# =============================================
+
 def load_alerts():
+    """
+    Charge la liste des flux RSS (sous forme de JSON).
+    """
     with open("rss_alerts.json", "r", encoding="utf-8") as file:
         return json.load(file)
 
-# Charger les entrées déjà traitées
+
 def load_seen_entries():
+    """Charge la liste d'URLs déjà analysées."""
     try:
         with open("seen_entries.json", "r", encoding="utf-8") as file:
             return json.load(file)
     except FileNotFoundError:
         return []
 
-# Sauvegarder les entrées traitées
+
 def save_seen_entries(entries):
+    """Sauvegarde la liste d'URLs déjà analysées."""
     with open("seen_entries.json", "w", encoding="utf-8") as file:
         json.dump(entries, file, ensure_ascii=False, indent=4)
 
-# Générer le résumé IA avec GPT-4
-def summarize_entry(entry, sujet):
-    prompt = f"""
-    Résume précisément cette publication réglementaire liée au sujet '{sujet}' :
 
-    Titre : {entry.title}
-    Contenu : {entry.summary}
-
-    Format attendu :
-    - Résumé clair :
-    - Impacts / Restrictions :
-    - Catégorie :
+def save_new_alerts(new_alertes_json):
     """
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
-    return response.choices[0].message.content.strip()
+    Sauvegarde les alertes détectées dans alertes_reglementaires.json
+    en les ajoutant à la fin du fichier existant.
+    """
+    try:
+        if os.path.exists("alertes_reglementaires.json"):
+            with open("alertes_reglementaires.json", "r", encoding="utf-8") as f:
+                try:
+                    existing_data = json.load(f)
+                except json.JSONDecodeError:
+                    existing_data = []
+        else:
+            existing_data = []
 
-# Ajouter automatiquement l'alerte au json
-def add_new_alert(question):
-    keywords = question.replace(" ", "%20")
-    rss_url = f"https://news.google.com/rss/search?q={keywords}&hl=fr&gl=FR&ceid=FR:fr"
+        updated_data = existing_data + new_alertes_json
 
-    alerts = load_alerts()
-    alerts.append({
-        "nom": question,
-        "rss": rss_url
-    })
+        with open("alertes_reglementaires.json", "w", encoding="utf-8") as f:
+            json.dump(updated_data, f, ensure_ascii=False, indent=4)
 
-    with open("rss_alerts.json", "w", encoding="utf-8") as file:
-        json.dump(alerts, file, ensure_ascii=False, indent=4)
+        print(f"✅ Fichier alertes_reglementaires.json mis à jour.")
+    except Exception as e:
+        print(f"❌ Erreur lors de la sauvegarde des alertes : {e}")
 
-    print(f"✅ Nouvelle alerte ajoutée pour '{question}' avec flux RSS : {rss_url}")
 
-# Vérifier et intégrer les nouveaux sujets depuis un fichier texte
-def check_new_subjects():
-    if os.path.exists("nouveaux_sujets.txt"):
-        with open("nouveaux_sujets.txt", "r", encoding="utf-8") as file:
-            lines = [line.strip() for line in file if line.strip()]
+# =============================================
+# 3) GESTION DE L'API OPENAI (GPT) AVEC BACKOFF
+# =============================================
 
-        if lines:
-            for sujet in lines:
-                add_new_alert(sujet)
-
-            # Effacer le fichier après avoir ajouté les sujets
-            open("nouveaux_sujets.txt", "w", encoding="utf-8").close()
-
-# Fonction principale optimisée pour Power Automate
-def check_alerts():
+def gpt_chat_completion(prompt, model="gpt-4", temperature=0):
+    """
+    Appel de l'API OpenAI ChatCompletion avec un mécanisme 
+    de "retry" en cas de RateLimitError.
+    """
+    import openai
     while True:
-        check_new_subjects()
+        try:
+            response = openai.ChatCompletion.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature
+            )
+            return response.choices[0].message.content.strip()
+        except openai.error.RateLimitError as e:
+            print(f"[GPT Rate Limit] {str(e)}\nAttente 10 secondes...")
+            time.sleep(10)
+        except Exception as e:
+            print(f"[GPT Error] {str(e)}\nAttente 5 secondes avant retry...")
+            time.sleep(5)
 
-        alerts = load_alerts()
-        seen_entries = load_seen_entries()
-        new_alertes_json = []
 
-        for alert in alerts:
-            feed = feedparser.parse(alert["rss"])
-            sujet = alert["nom"]
+# =============================================
+# 4) RECHERCHE AVEC SERPAPI (AU LIEU DE SCRAPING GOOGLE)
+# =============================================
 
-            for entry in feed.entries:
-                if entry.link not in seen_entries:
-                    summary = summarize_entry(entry, sujet)
+def search_google_serpapi(query):
+    """
+    Effectue une recherche Google via l'API SerpApi.
+    Retourne une liste de résultats (title, link).
+    """
+    if not SERP_API_KEY:
+        print("❌ ERREUR: Aucune clé SerpApi détectée. Mets SERP_API_KEY dans .env")
+        return []
 
-                    new_alert = {
+    # Paramètres pour SerpApi
+    params = {
+        "engine": "google",
+        "q": query,
+        "hl": "fr",
+        "gl": "fr",
+        "api_key": SERP_API_KEY,
+        "num": 10  # on récupère ~10 résultats
+    }
+
+    # Appel à SerpApi
+    search = GoogleSearch(params)
+    results_dict = search.get_dict()
+
+    if "organic_results" not in results_dict:
+        # En cas d'erreur / blocage / quota dépassé, on peut avoir pas de résultats
+        print("Aucun résultat (ou limite SerpApi atteinte).")
+        return []
+
+    # On parse 'organic_results' pour récupérer les titres et liens
+    organic_results = results_dict["organic_results"]
+    final_results = []
+    for item in organic_results:
+        title = item.get("title", "")
+        link = item.get("link", "")
+        if link.startswith("http"):
+            final_results.append({"title": title, "link": link})
+
+    return final_results
+
+
+def get_text_content(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        # On NE met pas verify=False, donc on fait un vrai check SSL
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        # Si le certificat est invalide, SSLError sera levée ici
+        soup = BeautifulSoup(response.text, 'html.parser')
+        text_parts = []
+
+        for tag in soup.find_all(['p', 'div', 'li', 'span']):
+            extracted = tag.get_text(strip=True)
+            if len(extracted.split()) > 3:
+                text_parts.append(extracted)
+        return " ".join(text_parts)
+
+    except SSLError as e:
+        print(f"Certificat invalide pour {url} => On ignore : {e}")
+        return ""  # On renvoie une chaîne vide pour signaler échec
+    except Exception as e:
+        print(f"Erreur get_text_content({url}): {e}")
+        return ""
+
+
+def google_search_analysis(query):
+    """
+    1) Fait une recherche SerpApi pour le mot-clé
+    2) Analyse GPT
+    3) Ne loggue que les articles "Oui"
+    4) Retourne la liste d'alertes pertinentes
+    """
+    variations = [
+        query,
+        f"{query} réglementation"
+    ]
+
+    all_search_results = []
+    for variation in variations:
+        # On appelle SerpApi
+        results = search_google_serpapi(variation)
+        # On ne print que le nombre de résultats, si tu veux :
+        print(f"[SerpApi] {variation} => {len(results)} résultats")
+        all_search_results.extend(results)
+        time.sleep(3)
+
+    relevant_alerts = []
+    found_urls = set()
+
+    for result in all_search_results:
+        url = result['link']
+        title = result['title']
+
+        if url in found_urls:
+            continue
+        found_urls.add(url)
+
+        text_page = get_text_content(url)
+        if not text_page:
+            continue
+
+        excerpt = text_page[:1500]
+        prompt = f"""
+Cet article mentionne-t-il un changement législatif ou réglementaire (loi, décret, arrêté, directive) ?
+Titre : {title}
+Extrait :
+{excerpt}
+
+Réponds simplement :
+"Oui, résumé: <ton résumé>"
+ou
+"Non"
+"""
+        analysis_result = gpt_chat_completion(prompt, model="gpt-4", temperature=0)
+
+        # On n'affiche rien si GPT répond "Non"
+        if analysis_result.lower().startswith("oui"):
+            # On log seulement le "Oui"
+            print(f"✅ [GPT] {title} => {analysis_result}")
+            relevant_alerts.append({
+                "sujet": query,
+                "titre": title,
+                "analyse": analysis_result,
+                "lien": url
+            })
+
+    return relevant_alerts
+
+
+# =============================================
+# 5) ANALYSE DES FLUX RSS
+# =============================================
+
+def check_alerts():
+    """
+    Parcourt la liste des flux RSS et vérifie via GPT 
+    s'il y a un changement réglementaire.
+    Retourne la liste d'alertes pertinentes (uniquement les 'Oui').
+    """
+    alerts = load_alerts()
+    seen_entries = load_seen_entries()
+    new_alertes_json = []
+
+    for alert in alerts:
+        feed = feedparser.parse(alert["rss"])
+        sujet = alert["nom"]
+
+        for entry in feed.entries:
+            if entry.link in seen_entries:
+                continue
+
+            prompt = f"""
+Vérifie si cet article mentionne un changement réglementaire officiel 
+en lien avec le sujet '{sujet}'.
+
+Titre : {entry.title}
+Contenu : {entry.summary}
+
+Réponds uniquement par :
+'Oui, résumé: <ton résumé>'
+ou
+'Non'
+            """
+            try:
+                result = gpt_chat_completion(prompt, model="gpt-4", temperature=0)
+
+                # On enregistre le lien comme vu (GPT a répondu)
+                seen_entries.append(entry.link)
+                save_seen_entries(seen_entries)
+
+                # On n'affiche rien si "Non"
+                if result.lower().startswith("oui"):
+                    print(f"✅ [RSS] Article réglementaire : {entry.title} => {result}")
+                    new_alertes_json.append({
                         "sujet": sujet,
                         "titre": entry.title,
-                        "resume": summary,
-                        "date": entry.published,
+                        "analyse": result,
+                        "date": getattr(entry, 'published', ''),
                         "lien": entry.link
-                    }
+                    })
+            except Exception as e:
+                print(f"Erreur d'analyse GPT sur RSS : {e}")
 
-                    new_alertes_json.append(new_alert)
+    if new_alertes_json:
+        save_new_alerts(new_alertes_json)
 
-                    seen_entries.append(entry.link)
-                    save_seen_entries(seen_entries)
+    return new_alertes_json
 
-                    print(f"✅ Nouvel article traité : {entry.title}")
 
-                    time.sleep(2)
+# =============================================
+# 6) COMBINAISON RSS + SERPAPI
+# =============================================
 
-        if new_alertes_json:
-            timestamp = int(time.time())
-            filename = f"alertes_{timestamp}.json"
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(new_alertes_json, f, ensure_ascii=False, indent=4)
+def full_analysis(sujet):
+    """
+    1) Analyse d'abord les flux RSS (check_alerts)
+    2) Fait ensuite une recherche (SerpApi) pour le sujet
+    3) Retourne la liste des alertes trouvées
+    """
+    print(f"\n🔍 Analyse RSS pour : {sujet}...")
+    rss_alerts = check_alerts()
 
-            print(f"✅ Nouveau fichier créé pour Power Automate : {filename}")
-        else:
-            print("ℹ️ Aucune nouvelle alerte détectée.")
+    print(f"\n🔍 Recherche Google (SerpApi) pour : {sujet}...")
+    google_alerts = google_search_analysis(sujet)
 
-        time.sleep(CHECK_INTERVAL)
+    # Enregistre immédiatement les alertes Google
+    if google_alerts:
+        save_new_alerts(google_alerts)
+
+    return rss_alerts + google_alerts
+
+
+# =============================================
+# 7) POINT D'ENTRÉE
+# =============================================
 
 if __name__ == "__main__":
-    print("🚀 Veille réglementaire active pour Power Automate...")
-    check_alerts()
+    print("🚀 Veille active : Recherche de changements réglementaires...\n")
+
+    # Sujets par défaut
+    sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
+
+    for sujet in sujets:
+        alerts = full_analysis(sujet)
+        print(f"➡️ Nombre d'alertes détectées pour '{sujet}' : {len(alerts)}\n")
+        # Petite pause entre deux sujets
+        time.sleep(10)
