@@ -1,0 +1,9 @@
+beautifulsoup4>=4.9.3
+feedparser>=6.0.8
+google-search-results>=2.1.0
+openai>=0.27.0
+python-dotenv>=1.0.0
+requests>=2.26.0
+certifi>=2023.7.22
+openai==0.28.0
+gunicorn
