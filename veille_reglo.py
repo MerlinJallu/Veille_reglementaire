@@ -331,4 +331,4 @@ if __name__ == "__main__":
         alerts = full_analysis(sujet)
         print(f"➡️ Nombre d'alertes détectées pour '{sujet}' : {len(alerts)}\n")
         # Petite pause entre deux sujets
-        time.sleep(10)
+        time.sleep(86400)
