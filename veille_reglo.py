@@ -232,9 +232,13 @@ def async_analysis():
 
 @app.route('/launch_research', methods=['POST'])
 def launch_research():
-    thread = threading.Thread(target=async_analysis)
-    thread.start()
-    return jsonify({"status": "Recherche en cours"})
+    print("🚀 Lancement de la recherche...")
+    try:
+        async_analysis()  # Appel direct sans threading pour vérifier si ça marche sur Heroku
+        return jsonify({"status": "Recherche lancée avec succès"})
+    except Exception as e:
+        print(f"❌ Erreur lors du lancement de la recherche : {e}")
+        return jsonify({"status": "Erreur lors du lancement de la recherche"}), 500
 
 @app.route('/get_alertes', methods=['GET'])
 def get_alertes():
