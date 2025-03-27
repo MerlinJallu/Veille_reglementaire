@@ -7,3 +7,4 @@ requests>=2.26.0
 certifi>=2023.7.22
 openai==0.28.0
 gunicorn
+Flask
