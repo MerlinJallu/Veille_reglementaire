@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from requests.exceptions import SSLError
 from flask import Flask, jsonify
+import threading
 
 # SerpApi
 from serpapi import GoogleSearch
@@ -61,6 +62,10 @@ def save_new_alerts(new_alertes_json):
         print(f"✅ Fichier alertes_reglementaires.json mis à jour.")
     except Exception as e:
         print(f"❌ Erreur lors de la sauvegarde des alertes : {e}")
+
+def update_status(status, progression=0):
+    with open("status.json", "w", encoding="utf-8") as f:
+        json.dump({"en_cours": status, "progression": progression}, f)
 
 
 # =============================================
@@ -130,87 +135,30 @@ def get_text_content(url):
                 text_parts.append(extracted)
         return " ".join(text_parts)
 
-    except SSLError as e:
-        print(f"Certificat invalide pour {url} => On ignore : {e}")
-        return ""
     except Exception as e:
-        print(f"Erreur get_text_content({url}): {e}")
         return ""
-
-def check_alerts():
-    alerts = load_alerts()
-    seen_entries = load_seen_entries()
-    new_alertes_json = []
-
-    for alert in alerts:
-        feed = feedparser.parse(alert["rss"])
-        sujet = alert["nom"]
-
-        for entry in feed.entries:
-            if entry.link in seen_entries:
-                continue
-
-            prompt = f"""
-Vérifie si cet article mentionne un changement réglementaire officiel en lien avec le sujet '{sujet}'.
-
-Titre : {entry.title}
-Contenu : {entry.summary}
-
-Réponds uniquement par :
-'Oui, résumé: <ton résumé>'
-ou
-'Non'
-            """
-            try:
-                result = gpt_chat_completion(prompt)
-                seen_entries.append(entry.link)
-                save_seen_entries(seen_entries)
-
-                if result.lower().startswith("oui"):
-                    new_alertes_json.append({
-                        "sujet": sujet,
-                        "titre": entry.title,
-                        "analyse": result,
-                        "date": getattr(entry, 'published', ''),
-                        "lien": entry.link
-                    })
-            except Exception as e:
-                print(f"Erreur d'analyse GPT sur RSS : {e}")
-
-    if new_alertes_json:
-        save_new_alerts(new_alertes_json)
-
-    return new_alertes_json
 
 def full_analysis():
     sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
     all_alerts = []
 
-    # Analyse des flux RSS
-    rss_alerts = check_alerts()
-    all_alerts.extend(rss_alerts)
-
-    # Recherche Google (SerpApi)
     for sujet in sujets:
         alerts = search_google_serpapi(sujet)
         all_alerts.extend(alerts)
 
     save_new_alerts(all_alerts)
+    update_status(False, 100)
     return all_alerts
-    sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
-    all_alerts = []
 
-    for sujet in sujets:
-        alerts = search_google_serpapi(sujet)
-        all_alerts.extend(alerts)
-
-    save_new_alerts(all_alerts)
-    return all_alerts
+def async_analysis():
+    update_status(True, 0)
+    full_analysis()
 
 @app.route('/launch_research', methods=['POST'])
 def launch_research():
-    all_alerts = full_analysis()
-    return jsonify({"status": "Recherche terminée", "alertes_trouvees": len(all_alerts)})
+    thread = threading.Thread(target=async_analysis)
+    thread.start()
+    return jsonify({"status": "Recherche en cours"})
 
 @app.route('/get_alertes', methods=['GET'])
 def get_alertes():
@@ -224,6 +172,17 @@ def get_alertes():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/get_status', methods=['GET'])
+def get_status():
+    try:
+        if os.path.exists("status.json"):
+            with open("status.json", "r", encoding="utf-8") as f:
+                status_data = json.load(f)
+            return jsonify(status_data)
+        else:
+            return jsonify({"error": "Aucun statut disponible."}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
