@@ -24,7 +24,6 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 # Clé SerpApi (stockée dans .env : SERP_API_KEY=...)
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
-
 # =============================================
 # 2) FONCTIONS POUR GÉRER LES FICHIERS JSON
 # =============================================
@@ -67,7 +66,6 @@ def update_status(status, progression=0):
     with open("status.json", "w", encoding="utf-8") as f:
         json.dump({"en_cours": status, "progression": progression}, f)
 
-
 # =============================================
 # 3) GESTION DE L'API OPENAI (GPT)
 # =============================================
@@ -87,28 +85,9 @@ def gpt_chat_completion(prompt, model="gpt-4", temperature=0):
             print(f"Erreur OpenAI : {e}")
             time.sleep(5)
 
-def get_text_content(url):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        text_parts = []
-
-        for tag in soup.find_all(['p', 'div', 'li', 'span']):
-            extracted = tag.get_text(strip=True)
-            if len(extracted.split()) > 3:
-                text_parts.append(extracted)
-        return " ".join(text_parts)
-
-    except Exception as e:
-        return ""
-
 # =============================================
 # 4) RECHERCHE GOOGLE (SERPAPI)
 # =============================================
-
-# Mots-clés pertinents à rechercher dans les titres et contenus avant GPT
-KEYWORDS = ["réglementation", "décret", "loi", "directive", "arrêté", "notification", "rappel", "sanction"]
 
 def search_google_serpapi(query):
     if not SERP_API_KEY:
@@ -140,8 +119,24 @@ def search_google_serpapi(query):
 
     return final_results
 
-def keyword_filter(text):
-    return any(keyword.lower() in text.lower() for keyword in KEYWORDS)
+# =============================================
+# 5) GESTION DU TEXTE HTML
+# =============================================
+
+def get_text_content(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        text_parts = []
+
+        for tag in soup.find_all(['p', 'div', 'li', 'span']):
+            extracted = tag.get_text(strip=True)
+            if len(extracted.split()) > 3:
+                text_parts.append(extracted)
+        return " ".join(text_parts)
+    except Exception as e:
+        return ""
 
 def filter_alerts(links):
     relevant_alerts = []
@@ -151,53 +146,89 @@ def filter_alerts(links):
             continue
 
         prompt = f"""
-Cet article parle-t-il d'un changement législatif ou réglementaire officiel (loi, décret, arrêté, directive) ? 
+Cet article parle-t-il d'un changement législatif ou réglementaire officiel ?
 Titre : {link['title']}
-Extrait : {text_content[:1500]}
+
+Texte :
+{text_content[:1500]}
 
 Réponds uniquement par :
 "Oui, résumé: <ton résumé>"
 ou
 "Non"
 """
-
         analysis = gpt_chat_completion(prompt)
         if analysis.lower().startswith("oui"):
             relevant_alerts.append({"title": link['title'], "link": link['link'], "analyse": analysis})
-    
     return relevant_alerts
+
+# =============================================
+# 6) ANALYSE DES FLUX RSS
+# =============================================
+
+def check_alerts():
+    alerts = load_alerts()
+    seen_entries = load_seen_entries()
+    new_alertes_json = []
+
+    for alert in alerts:
+        feed = feedparser.parse(alert["rss"])
+        sujet = alert["nom"]
+
+        for entry in feed.entries:
+            if entry.link in seen_entries:
+                continue
+
+            prompt = f"""
+Vérifie si cet article mentionne un changement réglementaire officiel en lien avec le sujet '{sujet}'.
+Titre : {entry.title}
+Contenu : {entry.summary}
+
+Réponds uniquement par :
+'Oui, résumé: <ton résumé>'
+ou
+'Non'
+            """
+            result = gpt_chat_completion(prompt)
+            seen_entries.append(entry.link)
+            if result.lower().startswith("oui"):
+                new_alertes_json.append({
+                    "sujet": sujet,
+                    "titre": entry.title,
+                    "analyse": result,
+                    "lien": entry.link
+                })
+                
+    save_seen_entries(seen_entries)
+    return new_alertes_json
+
+# =============================================
+# 7) ANALYSE TOTALE
+# =============================================
 
 def full_analysis():
     sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
     all_alerts = []
+    
+    rss_alerts = check_alerts()
+    all_alerts.extend(rss_alerts)
 
     for sujet in sujets:
-        print(f"🔍 Recherche Google pour le sujet : {sujet}")
         links = search_google_serpapi(sujet)
-        
-        if not links:
-            print(f"❌ Aucun lien trouvé pour {sujet}")
-            continue
-        
-        print(f"🔗 Liens trouvés ({len(links)}) :")
-        for link in links:
-            print(f"- {link['title']} : {link['link']}")
-        
-        # 🎯 Ajout du filtre GPT ici
         filtered_alerts = filter_alerts(links)
         all_alerts.extend(filtered_alerts)
-        
-    print(f"📂 Sauvegarde des alertes filtrées par GPT...")
+
     save_new_alerts(all_alerts)
-    
-    # Mise à jour du statut
     update_status(False, 100)
-    
     return all_alerts
 
 def async_analysis():
     update_status(True, 0)
     full_analysis()
+
+# =============================================
+# 8) ROUTES FLASK
+# =============================================
 
 @app.route('/launch_research', methods=['POST'])
 def launch_research():
@@ -207,27 +238,19 @@ def launch_research():
 
 @app.route('/get_alertes', methods=['GET'])
 def get_alertes():
-    try:
-        if os.path.exists("alertes_reglementaires.json"):
-            with open("alertes_reglementaires.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-            return jsonify(data)
-        else:
-            return jsonify({"error": "Aucune alerte trouvée."}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if os.path.exists("alertes_reglementaires.json"):
+        with open("alertes_reglementaires.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify(data)
+    return jsonify([])
 
 @app.route('/get_status', methods=['GET'])
 def get_status():
-    try:
-        if os.path.exists("status.json"):
-            with open("status.json", "r", encoding="utf-8") as f:
-                status_data = json.load(f)
-            return jsonify(status_data)
-        else:
-            return jsonify({"error": "Aucun statut disponible."}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if os.path.exists("status.json"):
+        with open("status.json", "r", encoding="utf-8") as f:
+            status_data = json.load(f)
+        return jsonify(status_data)
+    return jsonify({"en_cours": False, "progression": 0})
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
