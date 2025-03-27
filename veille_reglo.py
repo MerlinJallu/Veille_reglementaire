@@ -92,6 +92,9 @@ def gpt_chat_completion(prompt, model="gpt-4", temperature=0):
 # 4) RECHERCHE GOOGLE (SERPAPI)
 # =============================================
 
+# Mots-clés pertinents à rechercher dans les titres et contenus avant GPT
+KEYWORDS = ["réglementation", "décret", "loi", "directive", "arrêté", "notification", "rappel", "sanction"]
+
 def search_google_serpapi(query):
     if not SERP_API_KEY:
         return []
@@ -122,32 +125,16 @@ def search_google_serpapi(query):
 
     return final_results
 
-
-def get_text_content(url):
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        text_parts = []
-
-        for tag in soup.find_all(['p', 'div', 'li', 'span']):
-            extracted = tag.get_text(strip=True)
-            if len(extracted.split()) > 3:
-                text_parts.append(extracted)
-        return " ".join(text_parts)
-
-    except Exception as e:
-        return ""
-
+def keyword_filter(text):
+    return any(keyword.lower() in text.lower() for keyword in KEYWORDS)
 
 def filter_alerts(links):
     relevant_alerts = []
     for link in links:
-        text_content = get_text_content(link['link'])
-        if not text_content:
-            continue
-
-        prompt = f"""
+        if keyword_filter(link['title']):
+            text_content = get_text_content(link['link'])
+            if text_content and keyword_filter(text_content):
+                prompt = f"""
 Cet article parle-t-il d'un changement législatif ou réglementaire officiel ?
 Titre : {link['title']}
 
@@ -159,12 +146,10 @@ Réponds uniquement par :
 ou
 "Non"
 """
-
-        analysis = gpt_chat_completion(prompt)
-        if analysis.lower().startswith("oui"):
-            relevant_alerts.append({"title": link['title'], "link": link['link'], "analyse": analysis})
+                analysis = gpt_chat_completion(prompt)
+                if analysis.lower().startswith("oui"):
+                    relevant_alerts.append({"title": link['title'], "link": link['link'], "analyse": analysis})
     return relevant_alerts
-
 
 def full_analysis():
     sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
@@ -179,18 +164,15 @@ def full_analysis():
     update_status(False, 100)
     return all_alerts
 
-
 def async_analysis():
     update_status(True, 0)
     full_analysis()
-
 
 @app.route('/launch_research', methods=['POST'])
 def launch_research():
     thread = threading.Thread(target=async_analysis)
     thread.start()
     return jsonify({"status": "Recherche en cours"})
-
 
 @app.route('/get_alertes', methods=['GET'])
 def get_alertes():
@@ -204,7 +186,6 @@ def get_alertes():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route('/get_status', methods=['GET'])
 def get_status():
     try:
@@ -216,7 +197,6 @@ def get_status():
             return jsonify({"error": "Aucun statut disponible."}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
