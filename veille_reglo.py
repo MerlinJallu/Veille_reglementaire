@@ -146,24 +146,25 @@ def keyword_filter(text):
 def filter_alerts(links):
     relevant_alerts = []
     for link in links:
-        if keyword_filter(link['title']):
-            text_content = get_text_content(link['link'])
-            if text_content and keyword_filter(text_content):
-                prompt = f"""
-Cet article parle-t-il d'un changement législatif ou réglementaire officiel ?
-Titre : {link['title']}
+        text_content = get_text_content(link['link'])
+        if not text_content:
+            continue
 
-Texte :
-{text_content[:1500]}
+        prompt = f"""
+Cet article parle-t-il d'un changement législatif ou réglementaire officiel (loi, décret, arrêté, directive) ? 
+Titre : {link['title']}
+Extrait : {text_content[:1500]}
 
 Réponds uniquement par :
 "Oui, résumé: <ton résumé>"
 ou
 "Non"
 """
-                analysis = gpt_chat_completion(prompt)
-                if analysis.lower().startswith("oui"):
-                    relevant_alerts.append({"title": link['title'], "link": link['link'], "analyse": analysis})
+
+        analysis = gpt_chat_completion(prompt)
+        if analysis.lower().startswith("oui"):
+            relevant_alerts.append({"title": link['title'], "link": link['link'], "analyse": analysis})
+    
     return relevant_alerts
 
 def full_analysis():
@@ -182,10 +183,11 @@ def full_analysis():
         for link in links:
             print(f"- {link['title']} : {link['link']}")
         
-        # On désactive temporairement le filtrage pour voir ce qui est récupéré
-        all_alerts.extend(links)
+        # 🎯 Ajout du filtre GPT ici
+        filtered_alerts = filter_alerts(links)
+        all_alerts.extend(filtered_alerts)
         
-    print(f"📂 Sauvegarde des alertes non filtrées...")
+    print(f"📂 Sauvegarde des alertes filtrées par GPT...")
     save_new_alerts(all_alerts)
     
     # Mise à jour du statut
