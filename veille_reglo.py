@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import threading
 import requests
 import feedparser
 import openai
@@ -19,23 +20,19 @@ app = Flask(__name__)
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 SERP_API_KEY = os.getenv("SERP_API_KEY")
-CHECK_INTERVAL = 1800  # 30 minutes par défaut
+
+# Variables globales pour stocker l'état de l'analyse
+analysis_results = None
+analysis_in_progress = False
 
 # =============================================
 # 1) FONCTIONS DE GESTION DES FICHIERS JSON
 # =============================================
-
 def load_alerts_file():
-    """
-    Charge la configuration des flux RSS depuis rss_alerts.json.
-    (Ce fichier doit contenir une liste de dictionnaires avec par exemple :
-     {"nom": "FICT", "rss": "https://exemple.com/rss-fict.xml"})
-    """
     with open("rss_alerts.json", "r", encoding="utf-8") as file:
         return json.load(file)
 
 def load_seen_entries():
-    """Charge la liste des URLs déjà analysées."""
     try:
         with open("seen_entries.json", "r", encoding="utf-8") as file:
             return json.load(file)
@@ -43,15 +40,10 @@ def load_seen_entries():
         return []
 
 def save_seen_entries(entries):
-    """Sauvegarde la liste d'URLs déjà analysées."""
     with open("seen_entries.json", "w", encoding="utf-8") as file:
         json.dump(entries, file, ensure_ascii=False, indent=4)
 
 def save_new_alerts(new_alertes_json):
-    """
-    Sauvegarde les alertes détectées dans alertes_reglementaires.json
-    en les ajoutant à la fin du fichier existant.
-    """
     try:
         if os.path.exists("alertes_reglementaires.json"):
             with open("alertes_reglementaires.json", "r", encoding="utf-8") as f:
@@ -64,14 +56,13 @@ def save_new_alerts(new_alertes_json):
         updated_data = existing_data + new_alertes_json
         with open("alertes_reglementaires.json", "w", encoding="utf-8") as f:
             json.dump(updated_data, f, ensure_ascii=False, indent=4)
-        print(f"✅ Fichier alertes_reglementaires.json mis à jour.")
+        print("✅ Fichier alertes_reglementaires.json mis à jour.")
     except Exception as e:
         print(f"❌ Erreur lors de la sauvegarde des alertes : {e}")
 
 # =============================================
 # 2) FONCTIONS DE TRAITEMENT (RSS, SERPAPI, GPT)
 # =============================================
-
 def get_text_content(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -195,7 +186,6 @@ ou
         """
         try:
             result = gpt_chat_completion(prompt, model="gpt-3.5-turbo", temperature=0)
-            # Enregistrer l'entrée comme vue
             seen_entries.append(entry.link)
             save_seen_entries(seen_entries)
             if result.lower().startswith("oui"):
@@ -214,60 +204,73 @@ ou
 def full_analysis(sujet):
     """
     Combine l'analyse RSS et la recherche via SerpApi pour un sujet donné.
-    Pour l'analyse RSS, on récupère l'URL associée au sujet depuis le fichier rss_alerts.json.
     """
     alerts = []
-    # Récupération de la config RSS
     try:
         rss_configs = load_alerts_file()
     except Exception as e:
         print(f"Erreur lors du chargement de rss_alerts.json : {e}")
         rss_configs = []
-    # Si le sujet est présent dans la config RSS, on l'analyse
     for config in rss_configs:
         if config.get("nom").lower() == sujet.lower():
             alerts.extend(rss_analysis(sujet, config.get("rss")))
             break
-    # Recherche via SerpApi
     alerts.extend(google_search_analysis(sujet))
     return alerts
 
+def run_analysis():
+    """
+    Fonction lancée en arrière-plan par le POST /trigger.
+    Parcourt tous les sujets définis dans rss_alerts.json.
+    """
+    global analysis_results, analysis_in_progress
+    analysis_in_progress = True
+    results = []
+    try:
+        rss_configs = load_alerts_file()
+    except Exception as e:
+        print(f"Erreur lors du chargement de rss_alerts.json : {e}")
+        rss_configs = []
+    for config in rss_configs:
+        sujet = config.get("nom")
+        results.extend(full_analysis(sujet))
+        time.sleep(1)  # petite pause pour éviter une surcharge d'appels API
+    # Mise à jour du fichier d'alertes
+    if results:
+        save_new_alerts(results)
+    analysis_results = results
+    analysis_in_progress = False
+
 # =============================================
-# 3) ENDPOINT API
+# 3) ENDPOINTS API
 # =============================================
+
+@app.route("/trigger", methods=["POST"])
+def trigger_analysis():
+    """
+    Déclenche l'analyse en arrière-plan via un POST.
+    Le flux Power Automate envoie un POST, récupère un accusé,
+    puis attend et déclenche le GET une fois terminé.
+    """
+    global analysis_in_progress
+    if analysis_in_progress:
+        return jsonify({"status": "analysis already in progress"}), 200
+    thread = threading.Thread(target=run_analysis)
+    thread.start()
+    return jsonify({"status": "analysis started"}), 202
 
 @app.route("/alerts", methods=["GET"])
 def get_alerts():
     """
-    L'endpoint accepte un paramètre optionnel 'sujet'. S'il est fourni,
-    l'analyse se fait sur ce sujet. Sinon, on utilise une liste de sujets
-    par défaut tirée de rss_alerts.json.
+    Renvoie les résultats de l'analyse. Si l'analyse est en cours,
+    une réponse indiquant qu'il faut réessayer plus tard est renvoyée.
     """
-    sujet = request.args.get("sujet")
-    new_alerts = []
-    if sujet:
-        new_alerts = full_analysis(sujet)
-    else:
-        # Utilisation de tous les sujets définis dans rss_alerts.json
-        try:
-            rss_configs = load_alerts_file()
-        except Exception as e:
-            print(f"Erreur lors du chargement de rss_alerts.json : {e}")
-            rss_configs = []
-        for config in rss_configs:
-            s = config.get("nom")
-            new_alerts.extend(full_analysis(s))
-            time.sleep(10)  # éviter trop d'appels rapprochés aux API
-    # Mise à jour du fichier d'alertes
-    if new_alerts:
-        save_new_alerts(new_alerts)
-    # Pour renvoyer l'ensemble des alertes, on peut aussi lire le fichier stocké
-    if os.path.exists("alertes_reglementaires.json"):
-        with open("alertes_reglementaires.json", "r", encoding="utf-8") as f:
-            all_alerts = json.load(f)
-    else:
-        all_alerts = new_alerts
-    return jsonify(all_alerts)
+    global analysis_in_progress, analysis_results
+    if analysis_in_progress:
+        return jsonify({"status": "analysis in progress, please try later"}), 202
+    if analysis_results is None:
+        return jsonify({"status": "no analysis run yet"}), 200
+    return jsonify(analysis_results), 200
 
 # =============================================
 # 4) POINT D'ENTRÉE DE L'APPLICATION
