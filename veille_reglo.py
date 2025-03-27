@@ -21,42 +21,12 @@ app = Flask(__name__)
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
+# Clé SerpApi (stockée dans .env : SERP_API_KEY=...)
 SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
 # =============================================
-# 2) FONCTIONS POUR GÉRER LES FICHIERS JSON
-# =============================================
-
-def load_alerts():
-    with open("rss_alerts.json", "r", encoding="utf-8") as file:
-        return json.load(file)
-
-
-def load_seen_entries():
-    try:
-        with open("seen_entries.json", "r", encoding="utf-8") as file:
-            return json.load(file)
-    except FileNotFoundError:
-        return []
-
-
-def save_seen_entries(entries):
-    with open("seen_entries.json", "w", encoding="utf-8") as file:
-        json.dump(entries, file, ensure_ascii=False, indent=4)
-
-
-def save_new_alerts(new_alertes_json):
-    try:
-        with open("alertes_reglementaires.json", "w", encoding="utf-8") as f:
-            json.dump(new_alertes_json, f, ensure_ascii=False, indent=4)
-        return "✅ Fichier alertes_reglementaires.json mis à jour."
-    except Exception as e:
-        return f"❌ Erreur lors de la sauvegarde des alertes : {e}"
-
-
-# =============================================
-# 3) GESTION DE L'API OPENAI
+# 2) GESTION DE L'API OPENAI (GPT)
 # =============================================
 
 def gpt_chat_completion(prompt, model="gpt-4", temperature=0):
@@ -68,14 +38,14 @@ def gpt_chat_completion(prompt, model="gpt-4", temperature=0):
                 temperature=temperature
             )
             return response.choices[0].message.content.strip()
-        except openai.error.RateLimitError:
+        except openai.error.RateLimitError as e:
             time.sleep(10)
         except Exception as e:
             time.sleep(5)
 
 
 # =============================================
-# 4) SERPAPI SEARCH
+# 3) RECHERCHE AVEC SERPAPI (GOOGLE)
 # =============================================
 
 def search_google_serpapi(query):
@@ -90,6 +60,7 @@ def search_google_serpapi(query):
         "api_key": SERP_API_KEY,
         "num": 10
     }
+
     search = GoogleSearch(params)
     results_dict = search.get_dict()
 
@@ -97,54 +68,88 @@ def search_google_serpapi(query):
         return []
 
     organic_results = results_dict["organic_results"]
-    final_results = [{"title": item.get("title"), "link": item.get("link")} for item in organic_results if item.get("link", "").startswith("http")]
+    final_results = []
+    for item in organic_results:
+        title = item.get("title", "")
+        link = item.get("link", "")
+        if link.startswith("http"):
+            final_results.append({"title": title, "link": link})
 
     return final_results
 
 
 # =============================================
-# 5) ANALYSE DES FLUX RSS & SERPAPI
+# 4) ANALYSE DES FLUX RSS
 # =============================================
 
-def analyse_sujet(sujet):
-    results = []
-    seen_entries = load_seen_entries()
+def check_alerts():
+    alerts = load_alerts()
+    new_alertes_json = []
 
-    # Recherche Google via SerpApi
-    google_results = search_google_serpapi(sujet)
-    for result in google_results:
-        if result['link'] not in seen_entries:
+    for alert in alerts:
+        feed = feedparser.parse(alert["rss"])
+        sujet = alert["nom"]
+
+        for entry in feed.entries:
             prompt = f"""
-            Cet article mentionne-t-il un changement législatif ou réglementaire ?
-            Titre : {result['title']}
-            Lien : {result['link']}
-            Réponds par :
+            Vérifie si cet article mentionne un changement réglementaire officiel en lien avec le sujet '{sujet}'.
+            Titre : {entry.title}
+            Contenu : {entry.summary}
+
+            Réponds uniquement par :
             'Oui, résumé: <ton résumé>'
             ou
             'Non'
             """
-            analysis = gpt_chat_completion(prompt)
-            if analysis.lower().startswith("oui"):
-                results.append({
-                    "sujet": sujet,
-                    "titre": result['title'],
-                    "analyse": analysis,
-                    "lien": result['link']
-                })
-            seen_entries.append(result['link'])
 
-    save_seen_entries(seen_entries)
-    return results
+            result = gpt_chat_completion(prompt)
+
+            if result.lower().startswith("oui"):
+                new_alertes_json.append({
+                    "sujet": sujet,
+                    "titre": entry.title,
+                    "analyse": result,
+                    "lien": entry.link
+                })
+
+    return new_alertes_json
+
+
+# =============================================
+# 5) COMBINAISON RSS + SERPAPI
+# =============================================
+
+def full_analysis(sujet):
+    google_alerts = search_google_serpapi(sujet)
+    relevant_alerts = []
+
+    for result in google_alerts:
+        prompt = f"""
+        Cet article mentionne-t-il un changement législatif ou réglementaire ?
+        Titre : {result['title']}
+        Lien : {result['link']}
+
+        Réponds par :
+        'Oui, résumé: <ton résumé>'
+        ou
+        'Non'
+        """
+
+        analysis = gpt_chat_completion(prompt)
+        if analysis.lower().startswith("oui"):
+            relevant_alerts.append({
+                "sujet": sujet,
+                "titre": result['title'],
+                "analyse": analysis,
+                "lien": result['link']
+            })
+
+    return relevant_alerts
 
 
 # =============================================
 # 6) ROUTES FLASK
 # =============================================
-
-@app.route('/')
-def index():
-    return "API de Veille Réglementaire en cours d'exécution."
-
 
 @app.route('/api/veille', methods=['POST'])
 def veille():
@@ -157,7 +162,9 @@ def veille():
     results = []
 
     for sujet in sujets:
-        results += analyse_sujet(sujet)
+        results += full_analysis(sujet)
+
+    results += check_alerts()
 
     return jsonify(results), 200
 
