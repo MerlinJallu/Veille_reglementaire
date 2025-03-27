@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+rom flask import Flask, jsonify, request
 import os
 import time
 import json
@@ -26,7 +26,19 @@ SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 
 # =============================================
-# 2) GESTION DE L'API OPENAI (GPT)
+# 2) FONCTION DE CHARGEMENT DES FLUX RSS
+# =============================================
+
+def load_alerts():
+    try:
+        with open("rss_alerts.json", "r", encoding="utf-8") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return []
+
+
+# =============================================
+# 3) GESTION DE L'API OPENAI (GPT)
 # =============================================
 
 def gpt_chat_completion(prompt, model="gpt-4", temperature=0):
@@ -45,7 +57,7 @@ def gpt_chat_completion(prompt, model="gpt-4", temperature=0):
 
 
 # =============================================
-# 3) RECHERCHE AVEC SERPAPI (GOOGLE)
+# 4) RECHERCHE AVEC SERPAPI (GOOGLE)
 # =============================================
 
 def search_google_serpapi(query):
@@ -79,7 +91,7 @@ def search_google_serpapi(query):
 
 
 # =============================================
-# 4) ANALYSE DES FLUX RSS
+# 5) ANALYSE DES FLUX RSS
 # =============================================
 
 def check_alerts():
@@ -116,7 +128,7 @@ def check_alerts():
 
 
 # =============================================
-# 5) COMBINAISON RSS + SERPAPI
+# 6) COMBINAISON RSS + SERPAPI
 # =============================================
 
 def full_analysis(sujet):
@@ -148,7 +160,7 @@ def full_analysis(sujet):
 
 
 # =============================================
-# 6) ROUTES FLASK
+# 7) ROUTES FLASK
 # =============================================
 
 @app.route('/api/veille', methods=['POST'])
