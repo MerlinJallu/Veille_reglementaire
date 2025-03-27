@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+rom flask import Flask, jsonify, request
 import os
 import time
 import json
@@ -103,51 +103,38 @@ def search_google_serpapi(query):
 
 
 # =============================================
-# 5) ANALYSE DES FLUX RSS
+# 5) ANALYSE DES FLUX RSS & SERPAPI
 # =============================================
 
-def check_alerts():
-    alerts = load_alerts()
+def analyse_sujet(sujet):
+    results = []
     seen_entries = load_seen_entries()
-    new_alerts = []
 
-    for alert in alerts:
-        feed = feedparser.parse(alert["rss"])
-        sujet = alert["nom"]
-
-        for entry in feed.entries:
-            if entry.link in seen_entries:
-                continue
-
+    # Recherche Google via SerpApi
+    google_results = search_google_serpapi(sujet)
+    for result in google_results:
+        if result['link'] not in seen_entries:
             prompt = f"""
-            Vérifie si cet article mentionne un changement réglementaire officiel en lien avec le sujet '{sujet}'.
-            Titre : {entry.title}
-            Contenu : {entry.summary}
-            Réponds uniquement par :
+            Cet article mentionne-t-il un changement législatif ou réglementaire ?
+            Titre : {result['title']}
+            Lien : {result['link']}
+            Réponds par :
             'Oui, résumé: <ton résumé>'
             ou
             'Non'
             """
-            try:
-                result = gpt_chat_completion(prompt)
-                seen_entries.append(entry.link)
-                save_seen_entries(seen_entries)
+            analysis = gpt_chat_completion(prompt)
+            if analysis.lower().startswith("oui"):
+                results.append({
+                    "sujet": sujet,
+                    "titre": result['title'],
+                    "analyse": analysis,
+                    "lien": result['link']
+                })
+            seen_entries.append(result['link'])
 
-                if result.lower().startswith("oui"):
-                    new_alerts.append({
-                        "sujet": sujet,
-                        "titre": entry.title,
-                        "analyse": result,
-                        "date": getattr(entry, 'published', ''),
-                        "lien": entry.link
-                    })
-            except Exception as e:
-                continue
-
-    if new_alerts:
-        save_new_alerts(new_alerts)
-
-    return new_alerts
+    save_seen_entries(seen_entries)
+    return results
 
 
 # =============================================
@@ -159,57 +146,20 @@ def index():
     return "API de Veille Réglementaire en cours d'exécution."
 
 
-@app.route('/api/alerts', methods=['GET'])
-def get_alerts():
-    alerts = load_alerts()
-    return jsonify(alerts)
-
-
-@app.route('/api/seen_entries', methods=['GET'])
-def get_seen_entries():
-    seen_entries = load_seen_entries()
-    return jsonify(seen_entries)
-
-
-@app.route('/api/alerts', methods=['POST'])
-def save_alerts():
-    try:
-        new_alerts = request.json.get('new_alerts', [])
-        message = save_new_alerts(new_alerts)
-        return jsonify({"message": message}), 201
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
-
-
-@app.route('/api/analyse', methods=['POST'])
-def analyse():
+@app.route('/api/veille', methods=['POST'])
+def veille():
     data = request.json
-    prompt = data.get("prompt", "")
-    model = data.get("model", "gpt-4")
+    sujets = data.get("sujets", [])
 
-    if not prompt:
-        return jsonify({"error": "Prompt manquant."}), 400
+    if not sujets:
+        return jsonify({"error": "Liste de sujets manquante."}), 400
 
-    result = gpt_chat_completion(prompt, model=model)
-    return jsonify({"result": result})
+    results = []
 
+    for sujet in sujets:
+        results += analyse_sujet(sujet)
 
-@app.route('/api/search', methods=['POST'])
-def search():
-    data = request.json
-    query = data.get("query")
-
-    if not query:
-        return jsonify({"error": "La requête est manquante."}), 400
-
-    results = search_google_serpapi(query)
-    return jsonify({"results": results})
-
-
-@app.route('/api/rss', methods=['GET'])
-def check_rss():
-    results = check_alerts()
-    return jsonify(results)
+    return jsonify(results), 200
 
 
 if __name__ == '__main__':
