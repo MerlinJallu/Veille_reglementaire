@@ -8,6 +8,7 @@ import openai
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from requests.exceptions import SSLError
+from concurrent.futures import ThreadPoolExecutor
 
 # SerpApi
 from serpapi import GoogleSearch
@@ -128,10 +129,10 @@ def check_alerts():
 
 
 # =============================================
-# 6) COMBINAISON RSS + SERPAPI
+# 6) COMBINAISON RSS + SERPAPI AVEC THREADING
 # =============================================
 
-def full_analysis(sujet):
+def process_sujet(sujet):
     google_alerts = search_google_serpapi(sujet)
     relevant_alerts = []
 
@@ -173,8 +174,10 @@ def veille():
 
     results = []
 
-    for sujet in sujets:
-        results += full_analysis(sujet)
+    with ThreadPoolExecutor() as executor:
+        threads = [executor.submit(process_sujet, sujet) for sujet in sujets]
+        for task in threads:
+            results.extend(task.result())
 
     results += check_alerts()
 
