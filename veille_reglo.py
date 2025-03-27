@@ -122,6 +122,7 @@ def search_google_serpapi(query):
 
     return final_results
 
+
 def get_text_content(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -138,27 +139,58 @@ def get_text_content(url):
     except Exception as e:
         return ""
 
+
+def filter_alerts(links):
+    relevant_alerts = []
+    for link in links:
+        text_content = get_text_content(link['link'])
+        if not text_content:
+            continue
+
+        prompt = f"""
+Cet article parle-t-il d'un changement législatif ou réglementaire officiel ?
+Titre : {link['title']}
+
+Texte :
+{text_content[:1500]}
+
+Réponds uniquement par :
+"Oui, résumé: <ton résumé>"
+ou
+"Non"
+"""
+
+        analysis = gpt_chat_completion(prompt)
+        if analysis.lower().startswith("oui"):
+            relevant_alerts.append({"title": link['title'], "link": link['link'], "analyse": analysis})
+    return relevant_alerts
+
+
 def full_analysis():
     sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
     all_alerts = []
 
     for sujet in sujets:
-        alerts = search_google_serpapi(sujet)
-        all_alerts.extend(alerts)
+        links = search_google_serpapi(sujet)
+        filtered_alerts = filter_alerts(links)
+        all_alerts.extend(filtered_alerts)
 
     save_new_alerts(all_alerts)
     update_status(False, 100)
     return all_alerts
 
+
 def async_analysis():
     update_status(True, 0)
     full_analysis()
+
 
 @app.route('/launch_research', methods=['POST'])
 def launch_research():
     thread = threading.Thread(target=async_analysis)
     thread.start()
     return jsonify({"status": "Recherche en cours"})
+
 
 @app.route('/get_alertes', methods=['GET'])
 def get_alertes():
@@ -172,6 +204,7 @@ def get_alertes():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route('/get_status', methods=['GET'])
 def get_status():
     try:
@@ -183,6 +216,7 @@ def get_status():
             return jsonify({"error": "Aucun statut disponible."}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
