@@ -8,7 +8,6 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from requests.exceptions import SSLError
 from flask import Flask, jsonify
-import threading
 
 # SerpApi
 from serpapi import GoogleSearch
@@ -23,9 +22,6 @@ openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # Clé SerpApi (stockée dans .env : SERP_API_KEY=...)
 SERP_API_KEY = os.getenv("SERP_API_KEY")
-
-# Statut global
-research_in_progress = False
 
 
 # =============================================
@@ -61,9 +57,6 @@ def save_new_alerts(new_alertes_json):
         updated_data = existing_data + new_alertes_json
         with open("alertes_reglementaires.json", "w", encoding="utf-8") as f:
             json.dump(updated_data, f, ensure_ascii=False, indent=4)
-
-        with open("status.json", "w", encoding="utf-8") as f:
-            json.dump({"status": "Recherche terminée", "alertes_trouvees": len(updated_data)}, f)
 
         print(f"✅ Fichier alertes_reglementaires.json mis à jour.")
     except Exception as e:
@@ -124,7 +117,6 @@ def search_google_serpapi(query):
 
     return final_results
 
-
 def get_text_content(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -138,45 +130,64 @@ def get_text_content(url):
                 text_parts.append(extracted)
         return " ".join(text_parts)
 
+    except SSLError as e:
+        print(f"Certificat invalide pour {url} => On ignore : {e}")
+        return ""
     except Exception as e:
+        print(f"Erreur get_text_content({url}): {e}")
         return ""
 
-def launch_research_thread():
-    global research_in_progress
-    research_in_progress = True
+def google_search_analysis(query):
+    all_search_results = search_google_serpapi(query)
+    relevant_alerts = []
 
+    for result in all_search_results:
+        url = result['link']
+        title = result['title']
+
+        text_content = get_text_content(url)
+        if not text_content:
+            continue
+
+        prompt = f"Cet article parle-t-il d'un changement réglementaire officiel concernant {query}? {text_content[:1500]}"
+        analysis = gpt_chat_completion(prompt)
+
+        if "oui" in analysis.lower():
+            relevant_alerts.append({"sujet": query, "titre": title, "lien": url, "analyse": analysis})
+
+    return relevant_alerts
+
+
+def full_analysis():
     sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
     all_alerts = []
 
     for sujet in sujets:
-        alerts = search_google_serpapi(sujet)
+        alerts = google_search_analysis(sujet)
         all_alerts.extend(alerts)
 
-    if all_alerts:
-        save_new_alerts(all_alerts)
+    save_new_alerts(all_alerts)
+    return all_alerts
 
-    research_in_progress = False
 
 @app.route('/launch_research', methods=['POST'])
 def launch_research():
-    if research_in_progress:
-        return jsonify({"status": "Recherche déjà en cours."})
-
-    threading.Thread(target=launch_research_thread).start()
-    return jsonify({"status": "Recherche lancée."})
+    all_alerts = full_analysis()
+    return jsonify({"status": "Recherche terminée", "alertes_trouvees": len(all_alerts)})
 
 
 @app.route('/get_alertes', methods=['GET'])
 def get_alertes():
-    if research_in_progress:
-        return jsonify({"status": "Recherche en cours..."})
+    try:
+        if os.path.exists("alertes_reglementaires.json"):
+            with open("alertes_reglementaires.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return jsonify(data)
+        else:
+            return jsonify({"error": "Aucune alerte trouvée."}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-    if os.path.exists("alertes_reglementaires.json"):
-        with open("alertes_reglementaires.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return jsonify(data)
-    else:
-        return jsonify({"error": "Aucune alerte trouvée."}), 404
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
