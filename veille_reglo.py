@@ -171,12 +171,26 @@ def full_analysis():
     all_alerts = []
 
     for sujet in sujets:
+        print(f"🔍 Recherche Google pour le sujet : {sujet}")
         links = search_google_serpapi(sujet)
-        filtered_alerts = filter_alerts(links)
-        all_alerts.extend(filtered_alerts)
-
+        
+        if not links:
+            print(f"❌ Aucun lien trouvé pour {sujet}")
+            continue
+        
+        print(f"🔗 Liens trouvés ({len(links)}) :")
+        for link in links:
+            print(f"- {link['title']} : {link['link']}")
+        
+        # On désactive temporairement le filtrage pour voir ce qui est récupéré
+        all_alerts.extend(links)
+        
+    print(f"📂 Sauvegarde des alertes non filtrées...")
     save_new_alerts(all_alerts)
+    
+    # Mise à jour du statut
     update_status(False, 100)
+    
     return all_alerts
 
 def async_analysis():
