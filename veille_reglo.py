@@ -169,38 +169,39 @@ ou
 def check_alerts():
     alerts = load_alerts()
     seen_entries = load_seen_entries()
-    new_alertes_json = []
+    new_alerts = []
+
+    keywords = ["règlement", "directive", "loi", "code", "article", "réglementation", "compliance", "juridique", "législation"]
 
     for alert in alerts:
-        feed = feedparser.parse(alert["rss"])
-        sujet = alert["nom"]
+        if alert["id"] in seen_entries:
+            continue
 
-        for entry in feed.entries:
-            if entry.link in seen_entries:
-                continue
-
+        # Filtre par mots-clés avant d'interroger GPT
+        if any(keyword in alert["title"].lower() for keyword in keywords):
             prompt = f"""
-Vérifie si cet article mentionne un changement réglementaire officiel en lien avec le sujet '{sujet}'.
-Titre : {entry.title}
-Contenu : {entry.summary}
-
+Vérifie si cet article mentionne un changement réglementaire officiel ou une nouvelle loi importante.
+Titre : {alert['title']}
+Texte : {alert['summary'][:1500]}
 Réponds uniquement par :
-'Oui, résumé: <ton résumé>'
+"Oui, résumé: <ton résumé>"
 ou
-'Non'
-            """
+"Non"
+"""
             result = gpt_chat_completion(prompt)
-            seen_entries.append(entry.link)
             if result.lower().startswith("oui"):
-                new_alertes_json.append({
-                    "sujet": sujet,
-                    "titre": entry.title,
+                new_alerts.append({
+                    "sujet": alert["title"],
+                    "titre": alert["title"],
                     "analyse": result,
-                    "lien": entry.link
+                    "date": alert["published"],
+                    "lien": alert["link"]
                 })
-                
+
+        seen_entries.append(alert["id"])
+
     save_seen_entries(seen_entries)
-    return new_alertes_json
+    return new_alerts
 
 # =============================================
 # 7) ANALYSE TOTALE
@@ -233,9 +234,11 @@ def async_analysis():
 @app.route('/launch_research', methods=['POST'])
 def launch_research():
     print("🚀 Lancement de la recherche...")
+
     try:
-        async_analysis()  # Appel direct sans threading pour vérifier si ça marche sur Heroku
-        return jsonify({"status": "Recherche lancée avec succès"})
+        thread = threading.Thread(target=async_analysis)
+        thread.start()
+        return jsonify({"status": "Recherche en cours"})
     except Exception as e:
         print(f"❌ Erreur lors du lancement de la recherche : {e}")
         return jsonify({"status": "Erreur lors du lancement de la recherche"}), 500
