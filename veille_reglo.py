@@ -120,7 +120,6 @@ def search_google_serpapi(query):
 
     return final_results
 
-
 def get_text_content(url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -140,7 +139,6 @@ def get_text_content(url):
     except Exception as e:
         print(f"Erreur get_text_content({url}): {e}")
         return ""
-
 
 def google_search_analysis(query):
     all_search_results = search_google_serpapi(query)
@@ -164,9 +162,19 @@ def google_search_analysis(query):
     return relevant_alerts
 
 
-# =============================================
-# 5) ROUTE FLASK POUR RÉCUPÉRER LES ALERTES
-# =============================================
+@app.route('/launch_research', methods=['POST'])
+def launch_research():
+    sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
+    all_alerts = []
+
+    for sujet in sujets:
+        alerts = google_search_analysis(sujet)
+        all_alerts.extend(alerts)
+
+    if all_alerts:
+        save_new_alerts(all_alerts)
+    return jsonify({"status": "Recherche terminée", "alertes_trouvees": len(all_alerts)})
+
 
 @app.route('/get_alertes', methods=['GET'])
 def get_alertes():
