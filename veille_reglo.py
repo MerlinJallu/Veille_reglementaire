@@ -87,6 +87,21 @@ def gpt_chat_completion(prompt, model="gpt-4", temperature=0):
             print(f"Erreur OpenAI : {e}")
             time.sleep(5)
 
+def get_text_content(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        text_parts = []
+
+        for tag in soup.find_all(['p', 'div', 'li', 'span']):
+            extracted = tag.get_text(strip=True)
+            if len(extracted.split()) > 3:
+                text_parts.append(extracted)
+        return " ".join(text_parts)
+
+    except Exception as e:
+        return ""
 
 # =============================================
 # 4) RECHERCHE GOOGLE (SERPAPI)
