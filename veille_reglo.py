@@ -137,44 +137,80 @@ def get_text_content(url):
         print(f"Erreur get_text_content({url}): {e}")
         return ""
 
-def google_search_analysis(query):
-    all_search_results = search_google_serpapi(query)
-    relevant_alerts = []
+def check_alerts():
+    alerts = load_alerts()
+    seen_entries = load_seen_entries()
+    new_alertes_json = []
 
-    for result in all_search_results:
-        url = result['link']
-        title = result['title']
+    for alert in alerts:
+        feed = feedparser.parse(alert["rss"])
+        sujet = alert["nom"]
 
-        text_content = get_text_content(url)
-        if not text_content:
-            continue
+        for entry in feed.entries:
+            if entry.link in seen_entries:
+                continue
 
-        prompt = f"Cet article parle-t-il d'un changement réglementaire officiel concernant {query}? {text_content[:1500]}"
-        analysis = gpt_chat_completion(prompt)
+            prompt = f"""
+Vérifie si cet article mentionne un changement réglementaire officiel en lien avec le sujet '{sujet}'.
 
-        if "oui" in analysis.lower():
-            relevant_alerts.append({"sujet": query, "titre": title, "lien": url, "analyse": analysis})
+Titre : {entry.title}
+Contenu : {entry.summary}
 
-    return relevant_alerts
+Réponds uniquement par :
+'Oui, résumé: <ton résumé>'
+ou
+'Non'
+            """
+            try:
+                result = gpt_chat_completion(prompt)
+                seen_entries.append(entry.link)
+                save_seen_entries(seen_entries)
 
+                if result.lower().startswith("oui"):
+                    new_alertes_json.append({
+                        "sujet": sujet,
+                        "titre": entry.title,
+                        "analyse": result,
+                        "date": getattr(entry, 'published', ''),
+                        "lien": entry.link
+                    })
+            except Exception as e:
+                print(f"Erreur d'analyse GPT sur RSS : {e}")
+
+    if new_alertes_json:
+        save_new_alerts(new_alertes_json)
+
+    return new_alertes_json
 
 def full_analysis():
     sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
     all_alerts = []
 
+    # Analyse des flux RSS
+    rss_alerts = check_alerts()
+    all_alerts.extend(rss_alerts)
+
+    # Recherche Google (SerpApi)
     for sujet in sujets:
-        alerts = google_search_analysis(sujet)
+        alerts = search_google_serpapi(sujet)
+        all_alerts.extend(alerts)
+
+    save_new_alerts(all_alerts)
+    return all_alerts
+    sujets = ["FICT", "EUR-LEX", "CIDEF", "RASFF"]
+    all_alerts = []
+
+    for sujet in sujets:
+        alerts = search_google_serpapi(sujet)
         all_alerts.extend(alerts)
 
     save_new_alerts(all_alerts)
     return all_alerts
 
-
 @app.route('/launch_research', methods=['POST'])
 def launch_research():
     all_alerts = full_analysis()
     return jsonify({"status": "Recherche terminée", "alertes_trouvees": len(all_alerts)})
-
 
 @app.route('/get_alertes', methods=['GET'])
 def get_alertes():
